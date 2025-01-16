@@ -1,0 +1,140 @@
+# Azure DevOps Pipeline YAML for creating a VM and testing Alfresco Ubuntu Installer
+
+trigger: none
+
+variables:
+  resourceGroupName: rg-eastus-alfresco-linux
+  location: eastus
+  vmName: alf-u24-01
+  adminUsername: azureuser
+  adminPassword: 123456789aA#
+  vnetName: alfresco-vnet
+  subnetName: alfresco-subnet
+  diskSizeGB: 60
+  vnetAddressPrefix: 192.168.0.0/16             
+  subnetPrefix: 192.168.1.0/24                   
+  nsgName: alf-u24-01_nsg                     
+  pipName: alf-u24-01_pip                     
+  nicName: vmName_nic                    
+  osDiskName: alf-u24-01_osdisk
+  image: canonical:ubuntu-24_04-lts:server:24.04.202411030
+  size: Standard_B2s
+
+
+jobs:
+- job: CreateVM
+  displayName: "Create Azure VM"
+  pool:
+    vmImage: "ubuntu-24.04"
+
+  steps:
+  - task: AzureCLI@2
+    inputs:
+      azureSubscription: "AzureServiceConnection1" # Replace with your service connection name
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -e
+
+        # Create Resource Group
+        az group create --name ${{ variables.resourceGroupName }} --location ${{ variables.location }}
+                
+
+        # Create Virtual Network
+        az network vnet create \
+          --resource-group ${{ variables.resourceGroupName }} \
+          --name ${{ variables.vnetName }} \
+          --address-prefix ${{ variables.vnetAddressPrefix }} \
+          --subnet-name ${{ variables.subnetName }} \
+          --subnet-prefix ${{ variables.subnetPrefix }}
+
+        # Create Public IP
+        az network public-ip create \
+          --resource-group ${{ variables.resourceGroupName }} \
+          --name ${{ variables.pipName }} \
+          --allocation-method Static
+
+        # Create Network Security Group
+        az network nsg create --resource-group ${{ variables.resourceGroupName }} --name ${{ variables.nsgName }}
+
+        # Add NSG Rules for SSH, 8080
+        az network nsg rule create --resource-group ${{ variables.resourceGroupName }} \
+        --nsg-name ${{ variables.nsgName }} \
+        --name AllowSSH \
+        --priority  1000 \
+        --protocol Tcp \
+        --direction Inbound \
+        --source-address-prefixes '*' \
+        --source-port-ranges '*' \
+        --destination-address-prefixes '*' \
+        --destination-port-ranges 22 \
+        --access Allow
+        
+        az network nsg rule create --resource-group ${{ variables.resourceGroupName }} \
+        --nsg-name ${{ variables.nsgName }} \
+        --name Allow8080 \
+        --priority  1100 \
+        --protocol Tcp \
+        --direction Inbound \
+        --source-address-prefixes '*' \
+        --source-port-ranges '*' \
+        --destination-address-prefixes '*' \
+        --destination-port-ranges 8080 \
+        --access Allow
+
+        # Create Network Interface with NSG and Public IP
+        az network nic create \
+          --resource-group ${{ variables.resourceGroupName }} \
+          --name ${{ variables.nicName }} \
+          --vnet-name ${{ variables.vnetName }} \
+          --subnet ${{ variables.subnetName }} \
+          --network-security-group ${{ variables.nsgName }} \
+          --public-ip-address ${{ variables.pipName }}
+
+        
+        # Create VM
+        az vm create \
+          --resource-group ${{ variables.resourceGroupName }} \
+          --name ${{ variables.vmName }} \
+          --image ${{ variables.image }} \
+          --size ${{ variables.size }} \
+          --admin-username ${{ variables.adminUsername }} \
+          --admin-password ${{ variables.adminPassword }} \
+          --nics ${{ variables.nicName }} \
+          --os-disk-size-gb ${{ variables.diskSizeGB }} \
+          --storage-sku StandardSSD_LRS \
+          --authentication-type password
+
+        # Run apt update in the VM
+        az vm run-command invoke \
+          --resource-group ${{ variables.resourceGroupName }} \
+          --name ${{ variables.vmName }} \
+          --command-id RunShellScript \
+          --scripts "sudo apt update && sudo apt upgrade -y"
+
+- job: AlfrescoInstaller
+  displayName: "Alfresco Installer"
+  dependsOn: CreateVM
+  pool:
+    vmImage: "ubuntu-24.04"
+
+  steps:
+  - script: |
+      set -e
+      sudo useradd -m ubuntu
+      cd scripts
+      bash scripts/01-install_postgres.sh
+      bash scripts/02-install_java.sh
+      bash scripts/03-install_tomcat.sh
+      bash scripts/04-install_activemq.sh
+      bash scripts/05-download_alfresco_resources.sh
+      bash scripts/06-install_alfresco.sh
+      bash scripts/07-install_solr.sh
+      bash scripts/08-install_transform.sh
+      bash scripts/09-build_aca.sh
+      bash scripts/10-install_nginx.sh
+    displayName: "Running Alfresco Installer"
+
+  - script: |
+      systemctl status alfresco
+    displayName: "Verifying Alfresco Installation"
