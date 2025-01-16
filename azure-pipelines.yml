@@ -125,7 +125,7 @@ jobs:
   - script: |
       set -e
       sudo useradd -m ubuntu
-      cd scripts
+      cd $(Build.SourcesDirectory)/scripts
       bash scripts/01-install_postgres.sh
       bash scripts/02-install_java.sh
       bash scripts/03-install_tomcat.sh
