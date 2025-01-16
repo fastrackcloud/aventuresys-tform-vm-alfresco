@@ -105,6 +105,9 @@ jobs:
           --storage-sku StandardSSD_LRS \
           --authentication-type password
 
+          # Created VM
+          # Starting VM update & upgrade
+
         # Run apt update in the VM
         az vm run-command invoke \
           --resource-group ${{ variables.resourceGroupName }} \
